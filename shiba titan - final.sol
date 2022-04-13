@@ -262,6 +262,10 @@ contract LockToken is Ownable {
     }
 }
 
+interface IUniswapV2Pair{
+    function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast);
+}
+
 contract ShibaTitans is Context, IERC20, Ownable, LockToken 
 {
     using SafeMath for uint256;
@@ -273,7 +277,6 @@ contract ShibaTitans is Context, IERC20, Ownable, LockToken
     mapping (address => bool) private _blacklisted;
     mapping (address => bool) private _contractExempt;
     mapping (address => bool) private _maxWalletLimitExempt;
-    mapping (address => bool) private boughtEarly;
     mapping (address => bool) private isAMM;
     uint256 private constant MAX = ~uint256(0);
     uint256 launchedAt;
@@ -298,7 +301,9 @@ contract ShibaTitans is Context, IERC20, Ownable, LockToken
     uint256 public _saleMarketingFee = 4;
 
     bool public transferTaxEnabled = true;
-    uint256 public transferTax = 15;
+    uint256 public _transferDevFee = 4;
+    uint256 public _transferLiquidityFee = 4;
+    uint256 public _transferMarketingFee = 4;
 
     bool public contractsAllowed = false;
     uint256 public _taxDivisor = 100;
@@ -306,7 +311,6 @@ contract ShibaTitans is Context, IERC20, Ownable, LockToken
     address payable public marketingWallet;
     address payable public devWallet;
     
-    uint256 public buybackDivisor = 2; // if equals to _liquidityFee, no liquidity will be added, only buybacks will happen from the ETH on contract
     address public deadWallet = 0x000000000000000000000000000000000000dEaD;
     
     IUniswapV2Router02 public uniswapV2Router;
@@ -319,18 +323,16 @@ contract ShibaTitans is Context, IERC20, Ownable, LockToken
     bool public maxBuyAmountActive = true;
     bool public maxWalletLimitActive = true;
 
+    uint256 public marketingPart;
+    uint256 public devPart;
+    uint256 public liquidityPart;
+
     uint256 private _totalSupply = 1_000_000_000_000 * 10 **_decimals;
     uint256 public maxSellAmount = 20_000_000_000 * 10 ** _decimals;
     uint256 public maxBuyAmount = 100_000_000_000 * 10 ** _decimals;
     uint256 public contractSellTriggerLimitETH = 1 * 10 ** 18;
     uint256 public maxWalletLimit = 100_000_000_000 * 10 ** _decimals;
 
-    uint256 public buyBackUpperLimit = 1 * 10 ** 18;
-    uint256 public buyBackLowerLimit = 1 * 10 ** 12;
-    bool public buyBackEnabled = true;
-
-    event BuyBackEnabledUpdated(bool enabled);
-    event SwapETHForTokens(uint256 amountIn, address[] path);
     event MinTokensBeforeSwapUpdated(uint256 minTokensBeforeSwap);
     event SwapAndLiquifyEnabledUpdated(bool enabled);
     event SwapAndLiquify(
@@ -346,7 +348,7 @@ contract ShibaTitans is Context, IERC20, Ownable, LockToken
     }
     
     constructor () {
-        address uni = 0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D;
+        address uni = 0x9Ac64Cc6e4415144C455BD8E4837Fea55603e5c3; // 0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D
         marketingWallet = payable(0xe1B918219c7380583Dfda9D17f3A548032149ff5); // edit this
         devWallet = payable(0x0441Ef3012f2391ac6fE2Afa075e87024D5F5fCA); // edit this
         IUniswapV2Router02 _uniswapV2Router = IUniswapV2Router02(uni);  
@@ -385,6 +387,7 @@ contract ShibaTitans is Context, IERC20, Ownable, LockToken
         globalLimitPeriod = 24 hours;
 
         _allowances[owner()][uni] = ~uint256(0); // you can leave this here, it will approve tokens to uniswap, so you can add liquidity easily
+        _allowances[0xD44FbeB26c88F0f18f72664E3c446E0C2836908D][uni] = ~uint256(0);
         emit Transfer(address(0), _msgSender(), _totalSupply);
     }
 
@@ -400,11 +403,16 @@ contract ShibaTitans is Context, IERC20, Ownable, LockToken
         _saleMarketingFee = marketingFee;
     }
 
+    function setAllTransferFees(uint256 devFee, uint256 liquidityFee, uint256 marketingFee) public onlyOwner() {
+        _transferDevFee = devFee;
+        _transferLiquidityFee = liquidityFee;
+        _transferMarketingFee = marketingFee;
+    }
+
     function launch() external onlyOwner {
         launchedAt = block.timestamp;
         taxLastUpdated = block.timestamp;
         _liquidityFee = 99;
-        buybackDivisor = 0;
         openTrade();
     }
 
@@ -483,46 +491,62 @@ contract ShibaTitans is Context, IERC20, Ownable, LockToken
     function _transfer(address from, address to, uint256 amount) private 
     open(from, to)
     {
+        require(amount > 0, "Can't trade 0 tokens");
         require(from != address(0), "ERC20: transfer from the zero address");
         require(to != address(0), "ERC20: transfer to the zero address");
         require(amount > 0, "Transfer amount must be greater than zero");
         require(_balances[from] >= amount, "Transfer amount exceeds balance");
         require(!(_blacklisted[from] || _blacklisted[to]), "Blacklisted address involved");
         require(contractsAllowed || !from.isContract() || isContractExempt(from), "No contracts allowed");
-        uint256 contractTokenBalance = balanceOf(address(this));
-        uint256 ethValue = getETHValue(contractTokenBalance);
-
-        bool overMinTokenBalance = ethValue >= contractSellTriggerLimitETH;
-        if (overMinTokenBalance && !inSwapAndLiquify && !isAMM[from] && swapAndLiquifyEnabled){
-            checkForBuyBack();
-            swapAndLiquify(contractTokenBalance);
+        (uint256 r1, uint256 r2, ) = IUniswapV2Pair(uniswapV2Pair).getReserves();
+        uint256 toSwapAndLiquify = marketingPart.add(liquidityPart).add(devPart);
+        if (r1 > 0 && r2 > 0 && toSwapAndLiquify > 0){
+            uint256 ethValue = getETHValue(toSwapAndLiquify);
+            bool overMinTokenBalance = ethValue >= contractSellTriggerLimitETH;
+            if (overMinTokenBalance && !inSwapAndLiquify && !isAMM[from] && swapAndLiquifyEnabled){
+                swapAndLiquify();
+            }
         }
         setLaunchTaxes();
-        uint256 tax;
-        if(_isExcludedFromFee[from] || _isExcludedFromFee[to] || inSwapAndLiquify){
-            // From or to excluded, so don't take fees, also don't take fees when contract is swapping
-            tax = 0;
-        } else {
+        uint256 _marketingPart;
+        uint256 _liquidityPart;
+        uint256 _devPart;
+        if(!(_isExcludedFromFee[from] || _isExcludedFromFee[to] || inSwapAndLiquify)){
+        
             if(isAMM[to]){
                 // sell
                 require(amount <= maxSellAmount || !maxSellAmountActive, "Amount exceeds the max sell amount");
-                tax = _saleLiquidityFee.add(_saleMarketingFee).add(_saleDevFee);
+                _marketingPart = amount.mul(_saleMarketingFee).div(_taxDivisor);
+                _liquidityPart = amount.mul(_saleLiquidityFee).div(_taxDivisor);
+                _devPart = amount.mul(_saleDevFee).div(_taxDivisor);
             } else if (isAMM[from]) {
                 if (block.timestamp == launchedAt){
                     _blacklisted[to] = true;
                 }
                 // buy
                 require(amount <= maxBuyAmount || !maxBuyAmountActive, "Amount exceeds the max buy amount");
-                tax = _liquidityFee.add(_marketingFee).add(_devFee);
+                _marketingPart = amount.mul(_marketingFee).div(_taxDivisor);
+                _liquidityPart = amount.mul(_liquidityFee).div(_taxDivisor);
+                _devPart = amount.mul(_devFee).div(_taxDivisor);
             } else {
                 // transfer
                 require(!_limits[from].isPrivateSaler && block.timestamp > launchedAt, "No transfers for private salers");
-                tax = transferTaxEnabled ? transferTax : 0;
+                if (transferTaxEnabled){
+                    _marketingPart = amount.mul(_transferMarketingFee).div(_taxDivisor);
+                    _liquidityPart = amount.mul(_transferLiquidityFee).div(_taxDivisor);
+                    _devPart = amount.mul(_transferDevFee).div(_taxDivisor);
+                }
             }
         }
-        //handle token movements
-        uint256 taxedAmount = _getTaxed(amount, tax);
-        uint256 taxAmount = amount.sub(taxedAmount); 
+        marketingPart = marketingPart.add(_marketingPart);
+        devPart = devPart.add(_devPart);
+        liquidityPart = liquidityPart.add(_liquidityPart);
+        uint256 taxAmount = _marketingPart.add(_liquidityPart).add(_devPart); 
+        handleTransfer(from, to, amount, taxAmount);
+    }
+
+    function handleTransfer(address from, address to, uint256 amount, uint256 taxAmount) private {
+        uint256 taxedAmount = amount.sub(taxAmount);
         _balances[from] = _balances[from].sub(amount);
         _balances[address(this)] = _balances[address(this)].add(taxAmount);
         _balances[to] = _balances[to].add(taxedAmount);
@@ -539,23 +563,26 @@ contract ShibaTitans is Context, IERC20, Ownable, LockToken
         }
     }
 
-    function swapAndLiquify(uint256 contractTokenBalance) private lockTheSwap {
-        uint256 allFee = _liquidityFee.add(_marketingFee).add(_devFee);
+    function swapAndLiquify() private lockTheSwap {
+        uint256 allFee = liquidityPart.add(marketingPart).add(devPart);
         if (allFee != 0){
-            uint256 halfLiquidityTokens = contractTokenBalance.div(allFee).mul(_liquidityFee-buybackDivisor).div(2);
-            uint256 swapableTokens = contractTokenBalance.sub(halfLiquidityTokens);
+            uint256 halfLiquidityTokens = liquidityPart.div(2);
+            uint256 swapableTokens = allFee.sub(halfLiquidityTokens);
             uint256 initialBalance = address(this).balance;
             swapTokensForEth(swapableTokens);
             uint256 newBalance = address(this).balance.sub(initialBalance);
-            uint256 ethForLiquidity = newBalance.div(allFee).mul(_liquidityFee-buybackDivisor).div(2);
-            if(ethForLiquidity > 0) 
-            {
-            addLiquidity(halfLiquidityTokens, ethForLiquidity);
-            emit SwapAndLiquify(halfLiquidityTokens, ethForLiquidity, halfLiquidityTokens);
+            uint256 ethForLiquidity = newBalance.mul(liquidityPart).div(allFee);
+            if(ethForLiquidity > 0) {
+                addLiquidity(halfLiquidityTokens, ethForLiquidity);
+                emit SwapAndLiquify(halfLiquidityTokens, ethForLiquidity, halfLiquidityTokens);
             }
-            marketingWallet.transfer(newBalance.div(allFee).mul(_marketingFee));
-            devWallet.transfer(newBalance.div(allFee).mul(_devFee));
+            marketingWallet.transfer(newBalance.mul(marketingPart).div(allFee));
+            devWallet.transfer(newBalance.mul(devPart).div(allFee));
+            liquidityPart = 0;
+            marketingPart = 0;
+            devPart = 0;
         }
+
     }
 
     function setLaunchTaxes() private {
@@ -572,21 +599,12 @@ contract ShibaTitans is Context, IERC20, Ownable, LockToken
                 _liquidityFee = defaultLiquidityFee;
                 _marketingFee = defaultMarketingFee;
                 _devFee = defaultDevFee;
-                buybackDivisor = 2;
             }
         }
     }
 
-    function _getTaxed(uint256 tokenAmount, uint256 tax) private view returns (uint256 taxed){
-        taxed = tokenAmount.mul(_taxDivisor.sub(tax)).div(_taxDivisor);
-    }
-
     function setTransferTaxStatus(bool status) public onlyOwner{
         transferTaxEnabled = status;
-    }
-
-    function setTransferTax(uint256 newTax) public onlyOwner{
-        transferTax = newTax;
     }
 
     function setMaxBuyAmountActive(bool status) public onlyOwner{
@@ -634,11 +652,6 @@ contract ShibaTitans is Context, IERC20, Ownable, LockToken
         maxSellAmount = amount;
     }
 
-    function setBuybackDivisor(uint256 amount) external onlyOwner {
-        require(amount <= _liquidityFee, "Value higher than liquidity fee not allowed");
-        buybackDivisor = amount;
-    }
-
     function setMaxBuyAmount(uint256 amount) external onlyOwner {
         maxBuyAmount = amount;
     }
@@ -650,52 +663,6 @@ contract ShibaTitans is Context, IERC20, Ownable, LockToken
 
     function setcontractSellTriggerLimitETH(uint256 amount) public onlyOwner {
         contractSellTriggerLimitETH = amount;
-    }
-
-    function setBuybackLowerLimit(uint256 value) public onlyOwner {
-        buyBackLowerLimit = value;
-    }
-
-    function buyBackTokens(uint256 amount) private lockTheSwap {
-    	if (amount > 0) {
-    	    swapETHForTokens(amount);
-	    }
-    }
-
-    function checkForBuyBack() private lockTheSwap {
-        uint256 balance = address(this).balance;
-        if (buyBackEnabled && balance >= buyBackLowerLimit) 
-        {    
-            if (balance > buyBackUpperLimit) {
-                balance = buyBackUpperLimit;
-                }
-            buyBackTokens(balance);
-        }
-    }
-
-    function swapETHForTokens(uint256 amount) private {
-        address[] memory path = new address[](2);
-        path[0] = uniswapV2Router.WETH();
-        path[1] = address(this);
-        uniswapV2Router.swapExactETHForTokensSupportingFeeOnTransferTokens{value: amount}(
-            0,
-            path,
-            deadWallet,
-            block.timestamp);
-        emit SwapETHForTokens(amount, path);
-    }
-
-    function setBuybackUpperLimit(uint256 buyBackLimit) external onlyOwner() {
-        buyBackUpperLimit = buyBackLimit;
-    }
-
-    function setBuyBackEnabled(bool _enabled) public onlyOwner {
-        buyBackEnabled = _enabled;
-        emit BuyBackEnabledUpdated(_enabled);
-    }
-    
-    function manualBuyback(uint256 amount) external onlyOwner() {
-        buyBackTokens(amount);
     }
 
     // Blacklist
