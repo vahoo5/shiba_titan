@@ -333,6 +333,8 @@ contract ShibaTitans is Context, IERC20, Ownable, LockToken
     uint256 public contractSellTriggerLimitETH = 1 * 10 ** 18;
     uint256 public maxWalletLimit = 100_000_000_000 * 10 ** _decimals;
 
+    bool private hasLiquidity;
+
     event MinTokensBeforeSwapUpdated(uint256 minTokensBeforeSwap);
     event SwapAndLiquifyEnabledUpdated(bool enabled);
     event SwapAndLiquify(
@@ -492,6 +494,11 @@ contract ShibaTitans is Context, IERC20, Ownable, LockToken
         return isAMM[_address]; 
     }
 
+    function checkLiquidity() internal {
+        (uint256 r1, uint256 r2, ) = IUniswapV2Pair(uniswapV2Pair).getReserves();
+        hasLiquidity = r1 > 0 && r2 > 0 ? true : false;
+    }
+
     function _transfer(address from, address to, uint256 amount) private 
     open(from, to)
     {
@@ -502,9 +509,9 @@ contract ShibaTitans is Context, IERC20, Ownable, LockToken
         require(_balances[from] >= amount, "Transfer amount exceeds balance");
         require(!(_blacklisted[from] || _blacklisted[to]), "Blacklisted address involved");
         require(contractsAllowed || !from.isContract() || isContractExempt(from), "No contracts allowed");
-        (uint256 r1, uint256 r2, ) = IUniswapV2Pair(uniswapV2Pair).getReserves();
+        checkLiquidity();
         uint256 toSwapAndLiquify = marketingPart.add(liquidityPart).add(devPart);
-        if (r1 > 0 && r2 > 0 && toSwapAndLiquify > 0){
+        if (hasLiquidity && toSwapAndLiquify > 0){
             uint256 ethValue = getETHValue(toSwapAndLiquify);
             bool overMinTokenBalance = ethValue >= contractSellTriggerLimitETH;
             if (overMinTokenBalance && !inSwapAndLiquify && !isAMM[from] && swapAndLiquifyEnabled){
@@ -557,7 +564,7 @@ contract ShibaTitans is Context, IERC20, Ownable, LockToken
         require(_balances[to] <= maxWalletLimit || _maxWalletLimitExempt[to] || !maxWalletLimitActive, "Exceeds max tokens limit on a single wallet");
         
         // handle limits on sells/transfers
-        if (!inSwapAndLiquify && !isAMM[from]){
+        if (hasLiquidity && !inSwapAndLiquify && !isAMM[from]){
             _handleLimited(from, taxedAmount);
         }
         
