@@ -296,9 +296,9 @@ contract ShibaTitans is Context, IERC20, Ownable, LockToken
     uint256 updateTaxInterval = 21;
     uint256 taxLastUpdated;
 
-    uint256 public _saleDevFee = 4;
-    uint256 public _saleLiquidityFee = 4;
-    uint256 public _saleMarketingFee = 4;
+    uint256 public _saleDevFee = 0;
+    uint256 public _saleLiquidityFee = 49;
+    uint256 public _saleMarketingFee = 50;
 
     bool public transferTaxEnabled = true;
     uint256 public _transferDevFee = 4;
@@ -418,7 +418,10 @@ contract ShibaTitans is Context, IERC20, Ownable, LockToken
     function launch() external onlyOwner {
         launchedAt = block.timestamp;
         taxLastUpdated = block.timestamp;
-        _liquidityFee = 99;
+        _liquidityFee = 50;
+        _marketingFee = 50;
+        _saleLiquidityFee = 50;
+        _saleMarketingFee = 50;
         openTrade();
     }
 
@@ -607,11 +610,12 @@ contract ShibaTitans is Context, IERC20, Ownable, LockToken
             uint256 timeDelta = block.timestamp - taxLastUpdated;
             uint256 times = timeDelta / updateTaxInterval;
             for(uint256 i=0; i < times; i++){
-                if (_liquidityFee <= 3) break;
-                _liquidityFee  -= 3;
+                if (_liquidityFee <= 4) break;
+                _liquidityFee -= 2;
+                _marketingFee -= 2;
             }
             taxLastUpdated = block.timestamp;
-            if (_liquidityFee <= 12){
+            if (_liquidityFee <= 4){
                 updateTax = false;
                 _liquidityFee = defaultLiquidityFee;
                 _marketingFee = defaultMarketingFee;
