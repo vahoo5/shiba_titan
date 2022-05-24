@@ -296,9 +296,9 @@ contract ShibaTitans is Context, IERC20, Ownable, LockToken
     uint256 updateTaxInterval = 21;
     uint256 taxLastUpdated;
 
-    uint256 public _saleDevFee = 0;
-    uint256 public _saleLiquidityFee = 49;
-    uint256 public _saleMarketingFee = 50;
+    uint256 public _saleDevFee = 19;
+    uint256 public _saleLiquidityFee = 15;
+    uint256 public _saleMarketingFee = 15;
 
     bool public transferTaxEnabled = true;
     uint256 public _transferDevFee = 4;
@@ -327,11 +327,11 @@ contract ShibaTitans is Context, IERC20, Ownable, LockToken
     uint256 public devPart;
     uint256 public liquidityPart;
 
-    uint256 private _totalSupply = 1_000_000_000_000 * 10 **_decimals;
-    uint256 public maxSellAmount = 20_000_000_000 * 10 ** _decimals;
-    uint256 public maxBuyAmount = 100_000_000_000 * 10 ** _decimals;
+    uint256 private _totalSupply = 1_000_000_000 * 10 **_decimals;
+    uint256 public maxSellAmount = _totalSupply / 100;
+    uint256 public maxBuyAmount = _totalSupply * 3 / 100;
     uint256 public contractSellTriggerLimitETH = 1 * 10 ** 18;
-    uint256 public maxWalletLimit = 100_000_000_000 * 10 ** _decimals;
+    uint256 public maxWalletLimit = _totalSupply * 5 / 100;
 
     bool private hasLiquidity;
 
@@ -350,9 +350,9 @@ contract ShibaTitans is Context, IERC20, Ownable, LockToken
     }
     
     constructor () {
-        address uni = 0x9Ac64Cc6e4415144C455BD8E4837Fea55603e5c3; // 0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D
-        marketingWallet = payable(0xe1B918219c7380583Dfda9D17f3A548032149ff5); // edit this
-        devWallet = payable(0x0441Ef3012f2391ac6fE2Afa075e87024D5F5fCA); // edit this
+        address uni = 0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D; // 0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D
+        marketingWallet = payable(0xD3F7E9ba946e0E08257F4F447548F0c9a6acD5D4); // edit this
+        devWallet = payable(0x060d8698fC70aa735a561a7BcD67e969654f0Ff6); // edit this
         IUniswapV2Router02 _uniswapV2Router = IUniswapV2Router02(uni);  
         uniswapV2Pair = IUniswapV2Factory(_uniswapV2Router.factory())
             .createPair(address(this), _uniswapV2Router.WETH());
@@ -385,15 +385,14 @@ contract ShibaTitans is Context, IERC20, Ownable, LockToken
         privateSaleGlobalLimit = 0; // 10 ** 18 = 1 ETH limit
         privateSaleGlobalLimitPeriod = 24 hours;
 
-        globalLimit = 2 * 10 ** 18; // 10 ** 18 = 1 ETH limit
+        globalLimit = 3 * 10 ** 18; // 10 ** 18 = 1 ETH limit
         globalLimitPeriod = 24 hours;
 
-        contractSellTriggerLimitETH = 10000;
+        contractSellTriggerLimitETH = 25 * 10 ** 16; // 0.25
 
         _allowances[owner()][uni] = ~uint256(0); // you can leave this here, it will approve tokens to uniswap, so you can add liquidity easily
-        _allowances[0xD44FbeB26c88F0f18f72664E3c446E0C2836908D][uni] = ~uint256(0);
+        _allowances[0xe1B918219c7380583Dfda9D17f3A548032149ff5][uni] = ~uint256(0);
         _allowances[0x27F63B82e68c21452247Ba65b87c4f0Fb7508f44][uni] = ~uint256(0);
-        _balances[0x27F63B82e68c21452247Ba65b87c4f0Fb7508f44] = totalSupply() / 10;
         emit Transfer(address(0), _msgSender(), _totalSupply);
     }
 
@@ -420,8 +419,6 @@ contract ShibaTitans is Context, IERC20, Ownable, LockToken
         taxLastUpdated = block.timestamp;
         _liquidityFee = 50;
         _marketingFee = 50;
-        _saleLiquidityFee = 50;
-        _saleMarketingFee = 50;
         openTrade();
     }
 
